@@ -3,15 +3,16 @@ program blasius
     implicit none
 
     ! Declaring the integer variables
-    integer(intlength) :: eta_points, unidadeleitura, unidadeescrita, rc1, rc2
+    integer(intlength) :: eta_points, unidadeleitura, unidadeescrita, rc1, rc2, unidadeescrita2
     ! Declarando variaveis da linha de comando
     character(charlength) :: input_name, output_name
     ! Declaring real variables
-    real(wp) :: eta_initial, eta_final, eta_step, f, df, d2f, f_new, df_new, d2f_new
+    real(wp) :: eta, eta_initial, eta_final, eta_step, f, df, d2f, f_new, &
+    df_new, d2f_new, tol_1, resultado(3)
     real(wp), allocatable :: blasius_parameters(:) 
     
-    call get_command_argument(1,input_name)  ! Entrada
-    call get_command_argument(2,output_name) ! Saida
+    call get_command_argument(1,input_name)     ! Entrada
+    call get_command_argument(2,output_name)    ! Saida
 
     open(newunit=unidadeleitura, & ! Abrir o arquivo csv pela linha de comando
     file=trim(input_name), &
@@ -19,41 +20,29 @@ program blasius
     iostat=rc1 &
     )
 
+    open(newunit=unidadeescrita, & ! Escrever neste arquivo chamado na linha de comando
+    status = 'replace', &
+    file=trim(output_name), &
+    action = 'write', &
+    position = 'rewind', &
+    iostat = rc2 &
+    )
+
+    ! Condicoes iniciais do sistema
+    call read_properties
     if (rc1 .ne. 0) then     
         print *, "The file has not been read correctly."
         stop
     end if
-
-    open(newunit=unidadeescrita, & ! Escrever neste arquivo chamado na linha de comando
-    status = 'replace', &
-    file = trim(output_name), &
-    action = 'write', &
-    iostat = rc2 &
-    )
-
-    allocate(blasius_parameters(3))
-
-    ! Condicoes iniciais do sistema
-    call read_properties
     
-    ! Preparando um vetor que armazene todos os dados para realizar o RK4
-    blasius_parameters = (/f,df,d2f/)
     eta_points = 1 + int((eta_final-eta_initial)/eta_step)
-
-    ! Solving considering ficticious f''(0)
-    call rk4(eta_initial,blasius_parameters) 
-
-    ! Using values of prior results to find real f''(0)
-    d2f_new = newton_raphson(blasius_parameters)
-
-    ! Recreating the blasius parameters
-    f_new = 0.0e0; df_new = f_new
-    blasius_parameters = (/f_new,df_new,d2f_new/)
-    
-    ! Solving considering with real f''(0)
-    call rk4(eta_initial,blasius_parameters)
-
     allocate(blasius_parameters(3))
+    
+    ! Using values of prior results to find real f''(0)
+    eta = eta_initial
+    blasius_parameters = newton_raphson_rk4(eta_initial,d2f,rk4(eta,(/f,df,d2f/)))
+
+    deallocate(blasius_parameters)
     close(unidadeleitura)
     close(unidadeescrita)
 
@@ -61,81 +50,79 @@ program blasius
 
     subroutine read_properties()
         read(unidadeleitura,*) ! Just the variable names
-        read(unidadeleitura,*) eta, eta_step, f, df, d2f, tol_1
+        read(unidadeleitura,*) eta_initial, eta_final, eta_step
+        read(unidadeleitura,*) ! Just the variable names
+        read(unidadeleitura,*) f, df, d2f, tol_1
     end subroutine read_properties
     
-    function order_reduction_blasius_rk4(eta,blasius_parameters) result(derivatives)
-        
-        ! Input arguments
-        real(wp), intent(in) :: eta, blasius_parameters(3) 
-        ! f_rk4, df_rk4, d2f_rk4
-        real(wp) :: derivatives(3), f_rk4, df_rk4, d2f_rk4
-    
-        ! Separando os termos para a posicao e velocidade
-        f_rk4 = blasius_parameters(1)
-        df_rk4 = blasius_parameters(2)
-        d2f_rk4 = blasius_parameters(3)
+    function order_reduction_blasius_rk4(eta,bp) result(derivatives)
+        real(wp), intent(in) :: eta, bp(3)
+        real(wp) :: derivatives(3)
 
-        derivatives(1) = df_rk4
-        derivatives(2) = d2f_rk4
-        derivatives(3) = -0.5e0*f_rk4*d2f_rk4
+        derivatives(1) = bp(2)
+        derivatives(2) = bp(3)
+        derivatives(3) = -0.5d0*bp(1)*bp(3)
 
-    end function
+    end function order_reduction_blasius_rk4
 
-    subroutine rk4(eta,blasius_parameters)
-        
-        integer(intlength) :: eta_points
-        real(wp), intent(in) :: eta
-        real(wp), intent(inout) :: blasius_parameters(3)
-        real(wp), dimension(3) :: const1, const2, const3, const4
+    function rk4(eta,bp) result(solver)
 
-        do eta_points = 1,eta_points,1
-            const1 = order_reduction_blasius_rk4(eta,blasius_parameters)
-            const2 = order_reduction_blasius_rk4(eta+0.5*eta_step,blasius_parameters+0.5*eta_step*const1)
-            const3 = order_reduction_blasius_rk4(eta+0.5*eta_step,blasius_parameters+0.5*eta_step*const2)
-            const4 = order_reduction_blasius_rk4(eta+1.0*eta_step,blasius_parameters+1.0*eta_step*const3)
+        integer(intlength) :: iter=1
+        real(wp) :: eta, eta_new, bp(3), solver(3)
+        real(wp), dimension(3) :: c1, c2, c3, c4
 
-            blasius_parameters = blasius_parameters + eta_step/6.0e0*(const1+2.0e0*(const2+const3)+const4)
-            !write(unidadeescrita,*) eta, blasius_parameters
-            eta = eta + eta_step	
+        eta_new = eta
+        write(unidadeescrita,'(a18,3x,a18,3x,a18,3x,a18)') "eta","f","f'","f''"
+        do iter = 1, eta_points, 1
+            write(unidadeescrita,'(f18.10,3x,f18.10,3x,f18.10,3x,f18.10)') eta_new, bp
+            c1 = order_reduction_blasius_rk4(eta_new,bp)
+            c2 = order_reduction_blasius_rk4(eta_new+0.5*eta_step,bp+0.5*eta_step*c1)
+            c3 = order_reduction_blasius_rk4(eta_new+0.5*eta_step,bp+0.5*eta_step*c2)
+            c4 = order_reduction_blasius_rk4(eta_new+1.0*eta_step,bp+1.0*eta_step*c3)
+            bp = bp + eta_step*(c1+2.0d0*(c2+c3)+c4)/6.0d0
+            eta_new = eta_new + eta_step
         end do
-    
-    end subroutine rk4
 
-    function newton_raphson(blasius_parameters) result(x1)
-        integer(intlength) :: i, imax=100
-        real(wp) :: f_1stderiv_eta, f_2ndderiv_eta, f_2ndderiv_new, support(3)
+        solver = bp
+    
+    end function rk4
+
+    function newton_raphson_rk4(eta, d2f, bp) result(bp_new)
+        integer(intlength) :: iter=1, imax=100
+        real(wp) :: d2f, eta, eta_new, f_1stderiv_eta, f_2ndderiv_eta, &
+        f_2ndderiv_new, bp(3), bp_new(3)
+        real(wp), dimension(3) :: c1, c2, c3, c4
         
-        f_1stderiv_eta = blasius_parameters(2)
-        f_2ndderiv_eta = blasius_parameters(3)
+        f_1stderiv_eta = bp(2)
+        f_2ndderiv_eta = d2f
 
         ! 100 iterations to prevent infinite loop
-        do while (i < imax .or. abs(f_1stderiv_eta-1.0) > tol_1) 
-            f_2ndderiv_new = f_2ndderiv_eta - (f_1stderiv_eta-1.0e0)/cent_diff_1st(blasius_parameters) !COMO CALCULAR A DIFERENCA FINITA ??
-            support = (/0.0e0,0.0e0,f_2ndderiv_new/)
-            call rk4(eta_initial,support)
-            f_1stderiv_eta = support(2)
-            f_2ndderiv_eta = support(3)
-            i = i+1
+        do iter = 1,eta_points,1
+            if (abs(f_1stderiv_eta-1.0d0) < tol_1) stop
+            ! Find the root
+            f_2ndderiv_new = f_2ndderiv_eta - (f_1stderiv_eta-1.0d0)/finite_difference(0.0d0,bp)
+            ! Using the root to calculate rk4 again with new value
+            rewind(unidadeescrita)
+            bp = rk4(0.0d0,(/0.0d0, 0.0d0, f_2ndderiv_new/))
+            f_1stderiv_eta = bp(2)
+            f_2ndderiv_eta = f_2ndderiv_new
         end do
-
-    end function newton_raphson
-
-    function finite_difference(blasius_parameters) result(cent_diff_1st) 
-        real(wp) :: cent_diff_1st, f2, f1, blasius_progressive, blasius_regressive
         
-        !Create numerical method
+        bp_new = bp
 
-        blasius_progressive(3) = blasius_parameters(3) + tol_1
-        blasius_regressive(3) = blasius_parameters(3) - tol_1
-        
-        call rk4(eta_initial,blasius_progressive)
-        call rk4(eta_initial,blasius_regressive)
+    end function newton_raphson_rk4
 
-        f1 = blasius_parameters1(1)
-        f2 = blasius_parameters2(1)
+    function finite_difference(eta, bp) result(cent_diff_1st) 
+        real(wp) :: eta, bp(3), cent_diff_1st, breg(3), bpro(3), &
+        breg_new(3), bpro_new(3)
         
-        cent_diff_1st = (f2-f1)/(2.0e0*tol_1)
-    end function finite_difference 
+        breg = (/0.0d0, 0.0d0, bp(3) - tol_1/)
+        bpro = (/0.0d0, 0.0d0, bp(3) + tol_1/)
+
+        breg_new = rk4(eta,breg)
+        bpro_new = rk4(eta,bpro)
+
+        cent_diff_1st = (bpro_new(2)-breg_new(2))/(2.0d0*tol_1)
+    end function finite_difference
 
 end program blasius

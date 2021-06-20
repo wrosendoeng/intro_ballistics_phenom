@@ -1,2 +1,4 @@
-eta_initial     eta_final     eta_step    f       df      d2f       tol1            
-0.0e0           1.0e1         0.1e0       1.0e0   0.0e0   3.0e-1    1.0e-3
+eta0    eta1    eta_stdp           
+0.0d0   1.0d1   0.1d0       
+f       df      d2f         tol1
+0.0d0   0.0d0   1.0d0       1.0d-3
